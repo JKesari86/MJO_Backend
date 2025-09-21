@@ -2,6 +2,9 @@ import os
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
+from flask_bcrypt import Bcrypt
+from flask_jwt_extended import JWTManager
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 app = Flask(__name__)
 
@@ -11,6 +14,10 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Inicializamos la extensión de SQLAlchemy con nuestra aplicación Flask
 db = SQLAlchemy(app)
+
+app.config["JWT_SECRET_KEY"] = "dirtylittlesecret"  # Cambia esto en producción
+bcrypt = Bcrypt(app)
+jwt = JWTManager(app)
 
 # --- 2. Configuración de CORS (Permitir comunicación con tu Frontend) ---
 # Necesitas especificar el "origen" (origin) de tu frontend.
@@ -45,6 +52,14 @@ class Project(db.Model):
             'year': self.year
         }
 
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(255), nullable=False)
+
+    def __repr__(self):
+        return f'<User {self.username}>'
+
 # --- 4. Rutas de la API (Endpoints) ---
 
 # GET: Obtener todos los proyectos
@@ -63,6 +78,7 @@ def get_project(project_id):
 
 # POST: Crear un nuevo proyecto
 @app.route('/api/projects', methods=['POST'])
+@jwt_required()
 def add_project():
     data = request.get_json()
     if not data:
@@ -92,6 +108,7 @@ def add_project():
 
 # PUT: Actualizar un proyecto existente
 @app.route('/api/projects/<string:project_id>', methods=['PUT'])
+@jwt_required()
 def update_project(project_id):
     project = db.session.get(Project, project_id) # Usa db.session.get
     if project is None:
@@ -114,6 +131,7 @@ def update_project(project_id):
 
 # DELETE: Eliminar un proyecto
 @app.route('/api/projects/<string:project_id>', methods=['DELETE'])
+@jwt_required()
 def delete_project(project_id):
     project = db.session.get(Project, project_id) # Usa db.session.get
     if project is None:
@@ -190,6 +208,38 @@ def load_initial_data_direct():
             print(f"  [INFO] Proyecto '{item_data['title']}' ya existe, saltando.")
     print("Carga de datos iniciales finalizada.")
 
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"msg": "Username and password are required"}), 400
+
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    
+    new_user = User(username=username, password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+    
+    return jsonify({"msg": "User created successfully"}), 201
+
+from flask_jwt_extended import create_access_token
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    user = User.query.filter_by(username=username).first()
+
+    if user and bcrypt.check_password_hash(user.password, password):
+        access_token = create_access_token(identity=user.username)
+        return jsonify(access_token=access_token), 200
+    else:
+        return jsonify({"msg": "Bad username or password"}), 401
 
 # --- 6. Ejecutar la Aplicación ---
 if __name__ == '__main__':
